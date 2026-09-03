@@ -147,6 +147,20 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
+import warnings
+
+warnings.filterwarnings("ignore")
+import os
+
+os.environ["GAMMAPY_DATA"] = "/Users/alexcervino/Desktop/DARKMATTER/gammapy-data"
+import logging
+
+logging.getLogger("gammapy.modeling.models.spatial").setLevel(logging.ERROR)
+import logging
+
+logging.getLogger("gammapy").setLevel(logging.ERROR)
+
+
 ######################################################################
 # Analysis of a Dark Matter source
 # --------------------------------
@@ -229,8 +243,8 @@ dfactory = JFactory(
     profile=profile,  # Chosen density profile
     distance=target_dist,  # Target distance
     annihilation=False,  # Set if it is annihilation (true) or decay (false)
-    rmax=10
-    * u.kpc,  # Physical size of the dark matter halo in kpc. We set 1 just as an example
+    rmax=1000
+    * u.kpc,  # Physical size of the dark matter halo in kpc. We set 1000 just as an example
 )
 
 # Computation of the J factor
@@ -741,9 +755,9 @@ print(f"Sensitivity (no signal): {result['scale_sensitivity']:.3e}")
 # its allowed range. In such cases, the derived confidence level may not
 # have the coverage it claims to have.
 #
-# In this example, `scale_ul` (8.01e-03) is above `scale_sensitivity`
-# (4.46e-03), consistent with a mild upward fluctuation rather than a sign
-# of unreliable coverage.
+# In this example, `scale_ul` is above `scale_sensitivity`, consistent
+# with a mild upward fluctuation rather than a sign of unreliable
+# coverage.
 #
 
 
