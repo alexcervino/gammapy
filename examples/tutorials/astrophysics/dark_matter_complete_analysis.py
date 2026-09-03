@@ -135,7 +135,7 @@ from gammapy.modeling.models import (
 )
 from gammapy.modeling import select_nested_models
 from gammapy.astro.darkmatter import DarkMatterDecaySpectralModel, profiles, JFactory
-from gammapy.modeling import Fit
+from gammapy.modeling import Fit, stat_profile_ul_scipy
 from gammapy.estimators import ParameterEstimator
 
 from regions import CircleSkyRegion
@@ -229,6 +229,8 @@ dfactory = JFactory(
     profile=profile,  # Chosen density profile
     distance=target_dist,  # Target distance
     annihilation=False,  # Set if it is annihilation (true) or decay (false)
+    rmax=10
+    * u.kpc,  # Physical size of the dark matter halo in kpc. We set 1 just as an example
 )
 
 # Computation of the J factor
@@ -328,8 +330,7 @@ print(dataset.models.parameters.to_table())
 # so we make sure we study the target we want.
 #
 
-dataset.models["dm"].parameters["lon_0"].frozen = True
-dataset.models["dm"].parameters["lat_0"].frozen = True
+dataset.models["dm"].spatial_model.freeze()
 
 # Fit with background only (no DM signal)
 # Freeze the DM model parameters and free the background model parameters
@@ -405,19 +406,9 @@ print(f"TS = {TS:.2f}")  # Expected ~ 0 for background-only dataset
 
 
 ######################################################################
-# As aforementioned, the TS value is expected to be around 0 for a
-# background-only dataset, indicating that the addition of the DM signal
-# does not significantly improve the fit.
-#
-
-
-######################################################################
-# Another method: `select_nested_models`
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
-# Alternatively, `select_nested_models` automates this nested-hypothesis
-# test internally: it keeps the background and all other sources in the
-# field of view free and identical in both fits, and only freezes the DM
+# The `select_nested_models` automates this nested-hypothesis test
+# internally: it keeps the background and all other sources in the field
+# of view free and identical in both fits, and only freezes the DM
 # `scale` parameter to 0 for H0, restoring its original state
 # afterwards.
 #
@@ -433,8 +424,10 @@ print(f"TS = {TS:.4f}")
 
 
 ######################################################################
-# Additionally, we can make a visual check of our data to verify this
-# result.
+# As aforementioned, the TS value is expected to be around 0 for a
+# background-only dataset, indicating that the addition of the DM signal
+# does not significantly improve the fit. Additionally, we can make a
+# visual check of our data to verify this result.
 #
 
 fig_peek, axs = plt.subplots(2, 2, figsize=(7, 7))
@@ -504,25 +497,7 @@ plt.plot()
 # ^^^^^^^^^
 #
 # After fitting the model, it is important to check the residuals to
-# assess how well the model (source + background) describes the data. The
-# residuals are computed as the difference between the observed counts and
-# the predicted counts (`npred`), optionally normalized by the Poisson
-# uncertainty:
-#
-# - `diff`: simple residual, `counts - npred`
-# - `diff/sqrt(model)`: significance-like residual,
-#   `(counts - npred) / sqrt(npred)`
-# - `diff/model`: fractional residual, `(counts - npred) / npred`
-#
-# The **spatial residuals map** shows whether there is any remaining
-# structure in the field of view not captured by the model (e.g. an
-# unmodeled source or background mismatch). The **spectral residuals**
-# show whether the model reproduces the energy distribution of the counts
-# correctly, or if there are systematic deviations in specific energy
-# bins.
-#
-# A well-fitted model should show residuals fluctuating around zero,
-# without significant structure or trends, both spatially and in energy.
+# assess how well the model (source+background) describes the data.
 #
 
 # Spatial residuals map
@@ -655,37 +630,128 @@ print(
     f" — {scale_par.scan_values.max():.1e}"
 )
 print(f"Number of points: {len(scale_par.scan_values)}")
-print("Running profile scan...")
-
-# Run the profile likelihood
-profile = fit.stat_profile(
-    datasets=dataset,
-    parameter=scale_par,
-    reoptimize=True,  # re-optimize background at each scan point
-)
-
-print("Profile scan completed ✓")
-
-# Extract arrays──
-scale_scan = profile["dm.spectral.scale_scan"]
-delta_ts = profile["stat_scan"] - profile["stat_scan"].min()
-
-# Sanity checks───
-print(f"Minimum ΔTS: {delta_ts.min():.4f}  (should be ≈ 0)")
-print(f"Maximum ΔTS: {delta_ts.max():.2f}   (must be > 2.71 to find UL)")
-
-
-######################################################################
-# We see that the maximum ΔTS is bigger than 2.71, so we can compute the
-# upper limit of the scale and convert it into a physical value for our
-# study case. If this wasn’t the case, we must reconsiderer the
-# configuration for the scan (i.e. scan_max…) and run again.
-#
 
 # Find scale_ul: crossing at ΔTS = 2.71 on the right branch ────────────────
 # We interpolate only on the right side of the minimum (upper limit side)
-idx_min = np.argmin(delta_ts)
-scale_ul = np.interp(2.71, delta_ts[idx_min:], scale_scan[idx_min:])
+# By default uses a 5 sigma value for the sensitivity
+estimator = ParameterEstimator(
+    n_sigma=1,  # level for symmetric error (1σ = 68%)
+    n_sigma_ul=1.645,  # level for upper limit
+    selection_optional=["ul", "scan", "sensitivity"],
+    reoptimize=True,
+)
+
+result = estimator.run(datasets=dataset, parameter=scale_par)
+
+scale_scan = result["scale_scan"]
+stat_scan = result["stat_scan"]
+delta_ts = stat_scan - stat_scan.min()
+# 95% CL upper limit, computed internally by the estimator
+scale_ul = result["scale_ul"]
+
+print(scale_ul)
+
+
+######################################################################
+# When the fit converges, the optimizer computes the second derivative of
+# the fit statistic with respect to the parameter, evaluated at the
+# best-fit point. This curvature (the Hessian) determines `scale_err`,
+# under the assumption that the likelihood is parabolic in the vicinity of
+# the minimum. Since a parabola is symmetric by definition, this error is
+# always symmetric (`best-fit ± error`), regardless of the true shape of
+# the likelihood.
+#
+# The profile likelihood (`scale_scan` / `stat_scan`), by contrast,
+# evaluates the fit statistic directly on a grid of `scale` values
+# (re-optimizing all other free parameters at each point), making no
+# assumption about its shape.
+#
+# The parabolic approximation can break down near a physical boundary of
+# the parameter — here, `scale ≥ 0` — since the likelihood cannot
+# decrease further below zero and instead rises steeply on that side,
+# producing an asymmetric profile.
+#
+# If the symmetric error and the profile-likelihood interval agree
+# reasonably well, the parabolic approximation is adequate. If they differ
+# substantially, the likelihood is not well approximated by a parabola
+# near the best fit, and the interval (and upper limit) derived directly
+# from the profile should be preferred.
+#
+
+
+######################################################################
+# Now we can make this comparison. Both `scale_err` and `stat_scan`
+# come from the same `ParameterEstimator` call — the symmetric error is
+# simply a by-product of the local curvature at the best fit, while
+# `stat_scan` is the actual profile evaluated across the full scan
+# range. Despite coming from the same fit, the two diverge: the parabola
+# implied by `scale_err` matches the profile only in the immediate
+# vicinity of the best-fit value, then rises faster than the real profile
+# away from it. As a result, an upper limit computed from the symmetric
+# error would be tighter (lower) than the one obtained directly from the
+# scan (`scale_ul`). This shows why the profile-based interval, not the
+# parabolic approximation, should be used to derive the upper limit.
+#
+
+scale_best = result["scale"]
+scale_err = result["scale_err"]
+scale_scan = result["scale_scan"]
+stat_scan = result["stat_scan"]
+scale_ul = result["scale_ul"]
+delta_ts = stat_scan - stat_scan.min()
+
+fig, ax = plt.subplots()
+
+# Profile likelihood (the real shape)
+ax.plot(scale_scan, delta_ts, "o-", label="Profile likelihood (scan)")
+
+# Parabola implied by the symmetric (Hessian-based) error
+scale_grid = np.linspace(scale_scan.min(), scale_scan.max(), 200)
+delta_ts_parabola = ((scale_grid - scale_best) / scale_err) ** 2
+ax.plot(scale_grid, delta_ts_parabola, "--", label="Parabola from symmetric error")
+
+# Reference lines
+ax.axhline(2.71, color="gray", ls=":", label=r"$\Delta TS = 2.71$ (95% UL)")
+ax.axvline(scale_ul, color="red", ls=":", label=f"scale_ul = {scale_ul:.2e}")
+
+ax.set_xlabel("scale")
+ax.set_ylabel(r"$\Delta TS$")
+ax.set_ylim(0, 5)
+ax.legend()
+plt.show()
+
+print(f"Best fit:              {scale_best:.3e}")
+print(
+    f"Symmetric error:       ± {scale_err:.3e}  -> [{scale_best - scale_err:.3e}, {scale_best + scale_err:.3e}]"
+)
+print(f"Scan-based 95% UL:     {scale_ul:.3e}")
+print(f"Sensitivity (no signal): {result['scale_sensitivity']:.3e}")
+
+
+######################################################################
+# On the other hand, the `scale_sensitivity` value is the upper limit
+# expected in the absence of any signal, computed from an Asimov dataset.
+# It represents a reference for how good the upper limit should be, given
+# the observation’s exposure and background.
+#
+# If the measured upper limit comes out substantially below the
+# sensitivity, this can indicate that the asymptotic assumptions
+# underlying the profile-likelihood construction are not satisfied — for
+# example, low counts or the fitted parameter lying close to a boundary of
+# its allowed range. In such cases, the derived confidence level may not
+# have the coverage it claims to have.
+#
+# In this example, `scale_ul` (8.01e-03) is above `scale_sensitivity`
+# (4.46e-03), consistent with a mild upward fluctuation rather than a sign
+# of unreliable coverage.
+#
+
+
+######################################################################
+# We convert the computed upper limit into a physical value for our study
+# case. If this wasn’t the case, we must reconsiderer the configuration
+# for the scan (i.e. scan_max…) and run again.
+#
 
 # Convert to physical limits ────────────────────────────────────────────────
 
@@ -702,50 +768,6 @@ print(f"  DM mass:    {massDM}")
 print(f"  Channel:    {channel}")
 print(f"  scale UL (95% CL):          {scale_ul:.3e}")
 print(f"  Lifetime lower limit (95% CL): {tau_lower_limit:.3e} s")
-
-
-######################################################################
-# Here we can see that we have our limit con the decya lifetime computed
-# and translated into physical units. Now we plot the profile likelihood.
-#
-
-fig, ax = plt.subplots(figsize=(7, 5))
-
-# Profile curve───
-ax.plot(
-    scale_scan, delta_ts, color="steelblue", linewidth=2, label="Profile likelihood"
-)
-
-# 95% CL threshold
-ax.axhline(
-    2.71,
-    color="red",
-    linestyle="--",
-    linewidth=1.5,
-    label=r"95% CL  ($\Delta$TS = 2.71)",
-)
-
-# Upper limit marker ────────────────────────────────────────────────────────
-ax.axvline(
-    scale_ul,
-    color="green",
-    linestyle=":",
-    linewidth=1.5,
-    label=f"scale$_{{\\rm UL}}$ = {scale_ul:.2e}",
-)
-
-ax.set_xscale("log")
-ax.set_xlabel("scale", fontsize=12)
-ax.set_ylabel(r"$\Delta\,\mathrm{TS}$", fontsize=12)
-ax.set_ylim(-0.2, 10)
-ax.legend(fontsize=11)
-ax.set_title(
-    rf"Profile Likelihood — $m_{{\rm DM}}$ = {massDM},  "
-    rf"channel: {channel}",
-    fontsize=12,
-)
-plt.tight_layout()
-plt.show()
 
 
 ######################################################################
@@ -774,30 +796,6 @@ plt.show()
 # section**:
 # :math:`\langle\sigma v\rangle < \text{scale}_{\rm UL} \times \langle\sigma v\rangle_{\rm ref}`.
 #
-
-
-######################################################################
-# Another method: `ParameterEstimator`
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#
-# `ParameterEstimator` can give you the best fit, symmetric error, TS,
-# and (optionally) upper limit in one call. It doesn’t return a two-sided
-# profile-likelihood interval directly (that’s what the manual scan above
-# is for), but it’s a fast sanity check on the significance and the
-# Hessian error.
-#
-
-estimator = ParameterEstimator(
-    n_sigma=1,  # level for symmetric error (1σ = 68%)
-    n_sigma_ul=1.645,  # level for upper limit
-    selection_optional=["ul"],  # ask to also compute the UL
-)
-result_par = estimator.run(datasets=[dataset], parameter="scale")
-
-print(f"Scale (best fit)      : {result_par['scale']:.4g}")
-print(f"Scale upper limit     : {result_par['scale_ul']:.4g}")
-print(f"TS                    : {result_par['ts']:.2f}")
-print(f"sqrt(TS)              : {np.sqrt(max(result_par['ts'], 0)):.2f} sigma")
 
 
 ######################################################################
@@ -833,23 +831,29 @@ print(f"sqrt(TS)              : {np.sqrt(max(result_par['ts'], 0)):.2f} sigma")
 idx_min = np.argmin(delta_ts)
 best_fit = scale_scan[idx_min]
 
-lo_branch = delta_ts[: idx_min + 1]
-hi_branch = delta_ts[idx_min:]
+lo_branch_scale = scale_scan[: idx_min + 1]
+lo_branch_stat = stat_scan[: idx_min + 1]
+hi_branch_scale = scale_scan[idx_min:]
+hi_branch_stat = stat_scan[idx_min:]
 
 print(f"Best-fit scale          : {best_fit:.3e}")
 
-# Two-sided confidence intervals (both branches around the minimum)
 for cl_label, delta_ts_threshold in [("68%", 1.0), ("95%", 3.84)]:
-    scale_lo = np.interp(
-        delta_ts_threshold, lo_branch[::-1], scale_scan[: idx_min + 1][::-1]
-    )
-    scale_hi = np.interp(delta_ts_threshold, hi_branch, scale_scan[idx_min:])
+    try:
+        scale_hi = stat_profile_ul_scipy(
+            hi_branch_scale, hi_branch_stat, delta_ts=delta_ts_threshold
+        )
+        scale_lo = -stat_profile_ul_scipy(
+            -lo_branch_scale[::-1], lo_branch_stat[::-1], delta_ts=delta_ts_threshold
+        )
+    except ValueError:
+        print(f"{cl_label} CL: no crossing found in this profile (TS too low)")
+        continue
     print(f"{cl_label} CL interval on scale : [{scale_lo:.3e}, {scale_hi:.3e}]")
 
     # Converted to the physical quantity (decay case)
     tau_ref = spectral_model.LIFETIME_AGE_OF_UNIVERSE
-    tau_best = tau_ref / best_fit
-    tau_hi = tau_ref / scale_lo  # inverse relation: swap bounds
+    tau_hi = tau_ref / scale_lo
     tau_lo = tau_ref / scale_hi
     print(f"{cl_label} CL interval on tau   : [{tau_lo:.3e}, {tau_hi:.3e}]")
 
