@@ -147,20 +147,6 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
-import warnings
-
-warnings.filterwarnings("ignore")
-import os
-
-os.environ["GAMMAPY_DATA"] = "/Users/alexcervino/Desktop/DARKMATTER/gammapy-data"
-import logging
-
-logging.getLogger("gammapy.modeling.models.spatial").setLevel(logging.ERROR)
-import logging
-
-logging.getLogger("gammapy").setLevel(logging.ERROR)
-
-
 ######################################################################
 # Analysis of a Dark Matter source
 # --------------------------------
