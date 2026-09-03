@@ -320,6 +320,13 @@ dataset.peek()
 # the model prediction, while all fixed parameters remain at their assumed
 # values.
 #
+# Rather than performing the two fits by hand, we use Gammapy’s
+# `select_nested_models` function, which automates this
+# nested-hypothesis test: it keeps the background and any other sources in
+# the field of view free and identical in both fits, and only freezes the
+# DM `scale` parameter to 0 for H0, restoring its original state
+# afterwards.
+#
 
 # First check the parameters of the model
 print(dataset.models.parameters.to_table())
@@ -332,86 +339,9 @@ print(dataset.models.parameters.to_table())
 
 dataset.models["dm"].spatial_model.freeze()
 
-# Fit with background only (no DM signal)
-# Freeze the DM model parameters and free the background model parameters
-dataset.models["dm"].spectral_model.scale.frozen = True
+# We unfroze norm and tilt so the background model can be fitted.
 dataset.models["stacked-bkg"].parameters["norm"].frozen = False
 dataset.models["stacked-bkg"].parameters["tilt"].frozen = False
-
-# Example of how to set the background normalization parameter for a specific dataset. This is useful when you want to adjust the background model's normalization before fitting or analyzing the data.
-dataset.models["stacked-bkg"].parameters[
-    "norm"
-].value = 1.0  # Starting point of the optimizer
-dataset.models["stacked-bkg"].parameters["norm"].min = 0.5
-dataset.models["stacked-bkg"].parameters["norm"].max = 2.0
-
-fit = Fit()
-result_bkg = fit.run(datasets=[dataset])
-print(f"Background fit converged: {result_bkg.success}")
-
-if not result_bkg.success:
-    print("WARNING: fit did not converge. Adjust starting values before continuing.")
-else:
-    stat_H0 = dataset.stat_sum()
-    print(f"         stat_H0 = {stat_H0:.4f}")
-
-# Another way to do the background-only fit is to create a new model with only the background component and assign it to the dataset. This is useful if you want to keep the original model intact for later use.
-# Here you have the code sample with a mock dataset
-fit = Fit()
-result_nosrc = fit.run(datasets=[dataset])
-if not result_nosrc.success:
-    print("WARNING: fit did not converge. Adjust starting values before continuing.")
-else:
-    stat_H0_nosrc = dataset.stat_sum()
-    print(f"         stat_H0 = {stat_H0_nosrc:.4f}")
-
-
-######################################################################
-# Once it has converged, we can proceed with the H1 fit.
-#
-
-# Full fit — all parameters free
-dataset.models["stacked-bkg"].parameters["norm"].frozen = False
-dataset.models["stacked-bkg"].parameters["tilt"].frozen = False
-dataset.models["dm"].spectral_model.scale.frozen = False
-
-result_full = fit.run(datasets=[dataset])
-print(f"Full fit converged: {result_full.success}")
-
-if not result_full.success:
-    print("WARNING: fit did not converge. Adjust starting values before continuing.")
-else:
-    stat_H1 = result_full.total_stat
-    print(f"         stat_H1 = {stat_H1:.4f}")
-
-
-# Another way to do the full fit is to create a new model with both the DM and background components and assign it to the dataset. This is useful if you want to keep the original model intact for later use.
-# Here you have the code sample
-dataset.models["stacked-bkg"].parameters["norm"].frozen = False
-dataset.models["stacked-bkg"].parameters["tilt"].frozen = False
-dataset.models["dm"].spectral_model.scale.frozen = False
-
-result_src = fit.run(datasets=[dataset])
-if not result_src.success:
-    print("WARNING: fit did not converge. Adjust starting values before continuing.")
-
-
-######################################################################
-# finally, when both fits are successful, we can proceed with he
-# calculation of the TS.
-#
-
-TS = stat_H0 - stat_H1
-print(f"TS = {TS:.2f}")  # Expected ~ 0 for background-only dataset
-
-
-######################################################################
-# The `select_nested_models` automates this nested-hypothesis test
-# internally: it keeps the background and all other sources in the field
-# of view free and identical in both fits, and only freezes the DM
-# `scale` parameter to 0 for H0, restoring its original state
-# afterwards.
-#
 
 result = select_nested_models(
     datasets=Datasets(dataset),
@@ -424,10 +354,10 @@ print(f"TS = {TS:.4f}")
 
 
 ######################################################################
-# As aforementioned, the TS value is expected to be around 0 for a
-# background-only dataset, indicating that the addition of the DM signal
-# does not significantly improve the fit. Additionally, we can make a
-# visual check of our data to verify this result.
+# The TS value is expected to be around 0 for a background-only dataset,
+# indicating that the addition of the DM signal does not significantly
+# improve the fit. Additionally, we can make a visual check of our data to
+# verify this result.
 #
 
 fig_peek, axs = plt.subplots(2, 2, figsize=(7, 7))
@@ -846,9 +776,9 @@ for cl_label, delta_ts_threshold in [("68%", 1.0), ("95%", 3.84)]:
         scale_lo = -stat_profile_ul_scipy(
             -lo_branch_scale[::-1], lo_branch_stat[::-1], delta_ts=delta_ts_threshold
         )
-    except ValueError:
-        print(f"{cl_label} CL: no crossing found in this profile (TS too low)")
+    except (ValueError, RuntimeError):
         continue
+
     print(f"{cl_label} CL interval on scale : [{scale_lo:.3e}, {scale_hi:.3e}]")
 
     # Converted to the physical quantity (decay case)
