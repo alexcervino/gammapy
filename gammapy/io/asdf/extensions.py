@@ -6,6 +6,7 @@ via an ``entry-point`` in the ``pyproject.toml`` file.
 
 from asdf.extension import ManifestExtension
 
+from .converters.data.gti import GTIConverter
 from .converters.maps.axes import (
     LabelMapAxisConverter,
     MapAxesConverter,
@@ -17,9 +18,17 @@ from .converters.maps.geom import (
     RegionGeomConverter,
     WcsGeomConverter,
 )
-from .converters.maps.ndmap import HpxNDMapConverter, WcsNDMapConverter
+
+from .converters.maps.maps import MapsConverter
+from .converters.maps.ndmap import (
+    HpxNDMapConverter,
+    RegionNDMapConverter,
+    WcsNDMapConverter,
+)
 
 GAMMAPY_CONVERTERS = [
+    MapsConverter(),
+    GTIConverter(),
     MapAxisConverter(),
     MapAxesConverter(),
     TimeMapAxisConverter(),
@@ -28,6 +37,7 @@ GAMMAPY_CONVERTERS = [
     RegionGeomConverter(),
     WcsGeomConverter(),
     HpxNDMapConverter(),
+    RegionNDMapConverter(),
     WcsNDMapConverter(),
 ]
 
